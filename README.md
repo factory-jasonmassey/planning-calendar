@@ -6,6 +6,7 @@ A single-file planning calendar for things like new hire start dates, team trave
 - Month, 3-month, 6-month, and year views
 - Click, drag, or Shift-click to select and label a day or a range of days
 - Headcount roster mode: a running list of people by start date, with counts for today and each month end
+- Roster export and import as JSON (import merges: matching people are updated, new people are added, nobody is removed)
 - Automatic snapshots, a Backups dialog to restore them, and JSON export and import
 
 ## Run it

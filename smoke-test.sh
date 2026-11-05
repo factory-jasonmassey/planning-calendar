@@ -66,7 +66,7 @@ ab fill "#ra-name" "Alex Existing"
 ab fill "#ra-role" "Sales Manager"
 ab click "#ra-form [type=submit]" >/dev/null
 ab click "#ra-bulk-toggle" >/dev/null
-ab eval "document.getElementById('ra-bulk-text').value = 'Bea Old, AE, $PAST\nCara Now, SE, $D1\nDev Next, AE, $NEXT_M\nEli Later, CSM, $(date -v1d -v+2m +%m)/15/$(date -v1d -v+2m +%Y)\n2026-01-01'; 1" >/dev/null
+ab eval "document.getElementById('ra-bulk-text').value = 'Bea Old, AE, $PAST\nCara Now, SE, $Y-$M-01\nDev Next, AE, $NEXT_M\nEli Later, CSM, $(date -v1d -v+2m +%m)/15/$(date -v1d -v+2m +%Y)\n2026-01-01'; 1" >/dev/null
 ab click "#ra-bulk-add" >/dev/null
 expect "$(ab get count 'tr.person')" 5 "people in roster"
 expect "$(ab get value '#ra-bulk-text')" "2026-01-01" "unreadable line left in box"
@@ -80,6 +80,28 @@ expect "$(ab eval "document.getElementById('ed-end-field').hidden")" true "end d
 ab fill "#ed-start" ""
 ab click "#ed-save" >/dev/null
 expect "$(ab get text '.kpi.now .v')" 4 "on team today after clearing Dev's date"
+
+echo "== roster export / import =="
+ab eval "window.__blobs = []; const o = URL.createObjectURL; URL.createObjectURL = (b) => { window.__blobs.push(b); return o(b); }; 1" >/dev/null
+ab click "#ra-export" >/dev/null
+expect "$(ab eval "(async () => { const d = JSON.parse(await window.__blobs.at(-1).text()); window.__export = d; return d.type === 'planning-calendar-roster' && d.people.length === 5; })()")" true "roster export contents"
+ab eval "(() => {
+  const d = window.__export;
+  d.people[0].role = 'Updated Role';
+  d.people.push({ name: 'Fay Imported', role: 'PM', start: '$NEXT_M', notes: 'from file' }, { name: '', start: 'nope' });
+  const dt = new DataTransfer();
+  dt.items.add(new File([JSON.stringify(d)], 'roster.json', { type: 'application/json' }));
+  const input = document.getElementById('roster-file');
+  input.files = dt.files;
+  input.dispatchEvent(new Event('change'));
+  return 1; })()" >/dev/null
+sleep 0.5
+expect "$(ab get count 'tr.person')" 6 "people after roster import (5 updated + 1 added)"
+expect "$(ab get text '#toast-msg')" "Roster import: added 1 person, updated 5, skipped 1 unreadable" "roster import toast"
+expect "$(ab eval "JSON.parse(localStorage.getItem('$KEY')).calendars[0].events.some(e => e.role === 'Updated Role')")" true "existing person updated by import"
+# Clicked via script: on a slow headless run the 5-second toast can be gone by now.
+ab eval "document.getElementById('toast-undo').click(); 1" >/dev/null
+expect "$(ab get count 'tr.person')" 5 "people after undoing roster import"
 
 echo "== month view shows month-end headcount =="
 ab click "#modes [data-mode='cal']" >/dev/null

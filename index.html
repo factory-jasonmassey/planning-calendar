@@ -239,6 +239,7 @@
             <button class="btn sm" id="import">Import</button>
             <button class="btn sm" id="backups">Backups</button>
             <input type="file" id="import-file" accept="application/json" hidden />
+            <input type="file" id="roster-file" accept="application/json,.json" hidden />
           </div>
         </div>
       </aside>
@@ -665,6 +666,9 @@
             <input type="date" id="ra-date" title="Start date. Leave blank if already on the team." />
             <button class="btn primary" type="submit">Add person</button>
             <button class="btn" type="button" id="ra-bulk-toggle">Paste a list</button>
+            <span class="spacer" style="flex:1"></span>
+            <button class="btn" type="button" id="ra-export" title="Download this roster as a JSON file">Export roster</button>
+            <button class="btn" type="button" id="ra-import" title="Add people from a roster JSON file">Import roster</button>
           </form>
           <div class="bulk" id="ra-bulk" hidden>
             <textarea id="ra-bulk-text" placeholder="One person per line: Name, Role, Start date&#10;Priya Shah, Account Executive, 2026-11-02&#10;Sam Lee, SE, 11/16/2026&#10;Jordan Park, CSM          (no date = already on team)"></textarea>
@@ -699,7 +703,71 @@
         }
         return { out, bad };
       }
-      const addPerson = (cal, p) => cal.events.push({ id: uid(), title: p.title, role: p.role || '', start: p.start || null, end: p.start || null, color: cal.color, notes: '' });
+      const addPerson = (cal, p) => cal.events.push({ id: uid(), title: p.title, role: p.role || '', start: p.start || null, end: p.start || null, color: cal.color, notes: p.notes || '' });
+
+      function download(name, data) {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 0);
+      }
+      const ROSTER_TYPE = 'planning-calendar-roster';
+      function rosterExport(cal) {
+        const people = [...cal.events]
+          .sort((a, b) => (a.start || '').localeCompare(b.start || '') || a.title.localeCompare(b.title))
+          .map((p) => ({ id: p.id, name: p.title, role: p.role || '', start: p.start || null, notes: p.notes || '' }));
+        return { type: ROSTER_TYPE, version: 1, calendar: cal.name, exportedAt: new Date().toISOString(), headcountToday: headcount(cal, todayKey()), people };
+      }
+      // Accepts this app's roster export, a bare array of people, or a full-app export (uses its first roster calendar).
+      function readRosterFile(data) {
+        let list = data;
+        if (data && data.type === ROSTER_TYPE) list = data.people;
+        else if (data && Array.isArray(data.calendars)) list = (data.calendars.find((c) => c.roster) || {}).events?.map((e) => ({ ...e, name: e.title }));
+        if (!Array.isArray(list)) throw new Error('Not a roster file');
+        const people = [], bad = [];
+        for (const p of list) {
+          const name = String(p?.name ?? p?.title ?? '').trim();
+          const raw = p?.start ? String(p.start) : '';
+          const start = raw ? parseDateLoose(raw) : null;
+          if (!name || (raw && !start)) { bad.push(p); continue; }
+          people.push({ id: p.id ? String(p.id) : null, title: name, role: String(p.role || '').trim(), start, notes: String(p.notes || '').trim() });
+        }
+        return { people, bad };
+      }
+      // Merge only: matching people (same id, or same name and start date) are updated, everyone else is added, nobody is removed.
+      function mergeRoster(cal, people) {
+        let added = 0, updated = 0;
+        const norm = (s) => s.toLowerCase().replace(/\s+/g, ' ');
+        for (const p of people) {
+          const match = cal.events.find((e) => (p.id && e.id === p.id)) ||
+            cal.events.find((e) => norm(e.title) === norm(p.title) && (e.start || null) === p.start);
+          if (match) {
+            Object.assign(match, { title: p.title, role: p.role, start: p.start, end: p.start, notes: p.notes });
+            updated++;
+          } else {
+            addPerson(cal, p);
+            added++;
+          }
+        }
+        return { added, updated };
+      }
+      $('roster-file').onchange = async (e) => {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        const cal = active();
+        try {
+          const { people, bad } = readRosterFile(JSON.parse(await file.text()));
+          if (!people.length) throw new Error('No people found');
+          snapshot(localStorage.getItem(STORE), 'Before roster import');
+          const before = JSON.parse(JSON.stringify(cal.events));
+          const { added, updated } = mergeRoster(cal, people);
+          save(); render();
+          const parts = [added && `added ${plural(added, 'person', 'people')}`, updated && `updated ${updated}`, bad.length && `skipped ${bad.length} unreadable`].filter(Boolean);
+          toast(`Roster import: ${parts.join(', ') || 'no changes'}`, () => { cal.events = before; save(); render(); });
+        } catch (err) { toast(`Roster import failed: ${err.message}`); }
+      };
 
       $('roster').addEventListener('submit', (e) => {
         e.preventDefault();
@@ -714,6 +782,13 @@
         toast(`Added ${name}`);
       });
       $('roster').addEventListener('click', (e) => {
+        if (e.target.id === 'ra-export') {
+          const cal = active();
+          download(`${cal.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-roster-${todayKey()}.json`, rosterExport(cal));
+          toast(`Exported ${plural(cal.events.length, 'person', 'people')}`);
+          return;
+        }
+        if (e.target.id === 'ra-import') { $('roster-file').click(); return; }
         if (e.target.id === 'ra-bulk-toggle') { $('ra-bulk').hidden = !$('ra-bulk').hidden; if (!$('ra-bulk').hidden) $('ra-bulk-text').focus(); return; }
         if (e.target.id === 'ra-bulk-add') {
           const { out, bad } = parseBulk($('ra-bulk-text').value);
@@ -997,14 +1072,7 @@
       };
 
       // export / import
-      $('export').onclick = () => {
-        const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `planning-calendar-${todayKey()}.json`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-      };
+      $('export').onclick = () => download(`planning-calendar-${todayKey()}.json`, state);
       $('import').onclick = () => $('import-file').click();
       $('import-file').onchange = async (e) => {
         const f = e.target.files[0];
